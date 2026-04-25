@@ -231,19 +231,6 @@ def create_app() -> Flask:
             return jsonify({"error": "unknown session"}), 404
         return jsonify({"ok": True})
 
-    @app.get("/api/verify/mock/<sid>/info")
-    def mock_verify_info(sid: str):
-        verifier = get_verifier()
-        info = verifier.mock_session_info(sid) if hasattr(verifier, "mock_session_info") else None  # type: ignore[attr-defined]
-        if info is None:
-            return jsonify({"error": "unknown session"}), 404
-        return jsonify({
-            "user_email": info["user_email"],
-            "user_name": info["user_name"],
-            "decided": info["verified"] is not None,
-            "verified": info["verified"],
-        })
-
     # =================================================================
     # Patient API
     # =================================================================

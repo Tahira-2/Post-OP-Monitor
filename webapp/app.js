@@ -87,15 +87,16 @@
   // ------------------------------------------------------------- routing
 
   const routes = {
-    '/':                renderLanding,
-    '/patient/login':   renderPatientLogin,
-    '/patient/signup':  renderPatientSignup,
-    '/patient':         renderPatientDashboard,
-    '/doctor/login':    renderDoctorLogin,
-    '/doctor/signup':   renderDoctorSignup,
-    '/doctor/verify':   renderDoctorVerify,
-    '/doctor':          renderDoctorDashboard,
-    '/verify/mock':     renderMockHostedVerify,
+    '/':                    renderLanding,
+    '/patient/login':       renderPatientLogin,
+    '/patient/signup':      renderPatientSignup,
+    '/patient':             renderPatientDashboard,
+    '/doctor/login':        renderDoctorLogin,
+    '/doctor/signup':       renderDoctorSignup,
+    '/doctor/verify':       renderDoctorVerify,
+    '/doctor/verify/mock':  renderDoctorVerifyMock,
+    '/doctor/verify/done':  renderDoctorVerifyDone,
+    '/doctor':              renderDoctorDashboard,
   };
 
   function parseHash() {
@@ -144,7 +145,9 @@
         ? `Doctor — ${state.me.full_name || state.me.email}${state.me.verified ? '' : '  (unverified)'}`
         : 'Doctor';
       addNav('Patients', '#/doctor');
-      if (!state.me?.verified) addNav('Verify ID', '#/doctor/verify');
+      // Verification is part of the signup journey — no permanent nav entry.
+      // An unverified doctor still sees an inline banner on the dashboard
+      // with a link back to /doctor/verify if they need it.
     }
     const out = document.createElement('button');
     out.className = 'ghost'; out.textContent = 'Sign out';
@@ -641,7 +644,7 @@
     if (state.me.verified) {
       const frag = html`
         <div class="card" style="max-width:520px;margin:0 auto;">
-          <h2 class="card-title">Verified</h2>
+          <h2 class="card-title">Already verified</h2>
           <p class="card-sub">Your clinician account is verified.</p>
           <div class="btn-row"><a class="btn" href="#/doctor">Go to dashboard</a></div>
         </div>`;
@@ -653,47 +656,109 @@
         <h2 class="card-title">Verify your clinical credentials</h2>
         <p class="card-sub">
           GuardianPost-Op uses a third-party identity-verification provider to
-          confirm new clinician accounts. You'll be sent to the provider's
-          hosted page to upload a government-issued ID.
+          confirm new clinician accounts before they can add patients or
+          receive summaries.
         </p>
-        <div id="step-host"></div>
+        <div class="banner info">
+          <strong>Demo provider:</strong> this build uses a mock stand-in.
+          In production it's swapped for Persona / Stripe Identity / Onfido /
+          Veriff with no other code changes.
+        </div>
+        <div class="btn-row">
+          <button id="start-btn">Start verification</button>
+        </div>
       </div>`;
     $view.appendChild(frag);
-    const host = document.getElementById('step-host');
 
-    host.innerHTML = `<div class="banner info">
-      <strong>Demo provider:</strong> the hosted page in this demo is a mock
-      stand-in. In production this is replaced by Persona / Stripe Identity /
-      Onfido / Veriff with no other code changes.
-    </div>
-    <button id="start-btn">Start verification</button>`;
-
-    document.getElementById('start-btn').onclick = async () => {
+    document.getElementById('start-btn').onclick = async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true; btn.textContent = 'Opening provider…';
       try {
         const r = await api('/api/doctor/verify/start', { method: 'POST' });
-        host.innerHTML = `
-          <div class="banner info">Provider session: <span class="kbd">${escapeHtml(r.provider_session_id)}</span></div>
-          <p class="muted">Open the hosted page in a new tab, complete the (mock) ID upload, then come back and click "Check verification".</p>
-          <div class="btn-row">
-            <a class="btn secondary" href="${r.hosted_url}" target="_blank" rel="noopener">Open hosted ID page</a>
-            <button id="poll-btn">Check verification</button>
-          </div>
-        `;
-        document.getElementById('poll-btn').onclick = async () => {
-          try {
-            const p = await api('/api/doctor/verify/poll', { method: 'POST' });
-            if (p.verified) {
-              toast('Verification approved.', 'ok');
-              navigate('/doctor');
-            } else if (p.status === 'rejected') {
-              toast(`Rejected: ${p.reason || 'unspecified'}`, 'error');
-            } else {
-              toast('Still pending — complete the hosted page first.', 'info');
-            }
-          } catch (e) { toast(e.message, 'error'); }
-        };
-      } catch (e) { toast(e.message, 'error'); }
+        navigate('/doctor/verify/mock', { sid: r.provider_session_id });
+      } catch (e) {
+        toast(e.message, 'error');
+        btn.disabled = false; btn.textContent = 'Start verification';
+      }
     };
+  }
+
+  async function renderDoctorVerifyMock(params) {
+    if (!state.token || state.role !== 'doctor') { return navigate('/doctor/login'); }
+    const sid = params.get('sid');
+    if (!sid) { return navigate('/doctor/verify'); }
+
+    const frag = html`
+      <div class="card" style="max-width:560px;margin:0 auto;">
+        <div class="banner info">
+          <strong>Mock identity-verification provider</strong> — stand-in for
+          Persona / Stripe Identity. In production the doctor would upload a
+          government-issued ID and a selfie here.
+        </div>
+        <h2 class="card-title">Confirm your identity</h2>
+        <p class="card-sub">
+          Click the button below to confirm verification. A real provider would
+          run document OCR + a liveness check at this step and post a webhook
+          back to GuardianPost-Op with the result.
+        </p>
+        <div class="muted" style="font-size:12.5px;margin-bottom:12px;">
+          Session: <span class="kbd">${escapeHtml(sid)}</span>
+        </div>
+        <div class="btn-row">
+          <button id="verify-btn">Verify with mock identifier</button>
+          <a class="btn ghost" href="#/doctor/verify">Cancel</a>
+        </div>
+      </div>`;
+    $view.appendChild(frag);
+
+    document.getElementById('verify-btn').onclick = async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true; btn.textContent = 'Verifying…';
+      try {
+        // Mock provider records the "approve" decision.
+        await api(`/api/verify/mock/${encodeURIComponent(sid)}/decision`, {
+          method: 'POST', auth: false, body: { accept: true },
+        });
+        // App polls the provider, which marks the doctor verified.
+        const p = await api('/api/doctor/verify/poll', { method: 'POST' });
+        if (!p.verified) {
+          throw new Error(p.reason || 'verification did not complete');
+        }
+        navigate('/doctor/verify/done');
+      } catch (e) {
+        toast(e.message, 'error');
+        btn.disabled = false; btn.textContent = 'Verify with mock identifier';
+      }
+    };
+  }
+
+  async function renderDoctorVerifyDone() {
+    // Blank "Verified" page that auto-navigates to the doctor sign-in form
+    // after 3 seconds. The current session is cleared first so the form
+    // loads fresh and the doctor can sign in as a verified clinician.
+    const SECONDS = 3;
+    const frag = html`
+      <div class="card" style="max-width:480px;margin:80px auto;text-align:center;">
+        <div style="font-size:42px;font-weight:700;color:var(--ok);margin-bottom:8px;">Verified</div>
+        <p class="muted" id="redir-note">Taking you to the sign-in page in ${SECONDS}…</p>
+      </div>`;
+    $view.appendChild(frag);
+
+    // Clear the session token now so the login screen we land on is empty.
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    clearSession();
+    renderTopbar();
+
+    let remaining = SECONDS;
+    const note = document.getElementById('redir-note');
+    const tick = setInterval(() => {
+      remaining -= 1;
+      if (note) note.textContent = `Taking you to the sign-in page in ${Math.max(0, remaining)}…`;
+      if (remaining <= 0) {
+        clearInterval(tick);
+        navigate('/doctor/login');
+      }
+    }, 1000);
   }
 
   // ------------------------------------------------------------- VIEW: doctor dashboard
@@ -959,57 +1024,6 @@
       state.selectedPatientId = null;
       host.innerHTML = '';
       refreshPatients();
-    };
-  }
-
-  // ------------------------------------------------------------- VIEW: mock hosted ID page
-
-  async function renderMockHostedVerify(params) {
-    const sid = params.get('session');
-    if (!sid) {
-      $view.appendChild(html`<div class="card"><p>Missing session.</p></div>`);
-      return;
-    }
-    let info = null;
-    try {
-      info = await api(`/api/verify/mock/${encodeURIComponent(sid)}/info`, { auth: false });
-    } catch (e) {
-      $view.appendChild(html`<div class="card"><p>Unknown verification session.</p></div>`);
-      return;
-    }
-    const frag = html`
-      <div class="card" style="max-width:560px;margin:0 auto;">
-        <div class="banner info">
-          <strong>Mock verification provider</strong> — this page stands in for
-          Persona / Stripe Identity / Onfido. In production the doctor would
-          upload a real ID + selfie here.
-        </div>
-        <h2 class="card-title">Verify your identity</h2>
-        <p class="card-sub">For: <span class="kbd">${escapeHtml(info.user_name || info.user_email)}</span></p>
-        <p>Pretend you've uploaded your government-issued ID and a selfie. Choose an outcome:</p>
-        <div class="btn-row">
-          <button id="ok-btn">Approve verification</button>
-          <button id="rej-btn" class="danger">Reject</button>
-        </div>
-        <div id="status" class="muted" style="margin-top:12px;font-size:13px;">
-          ${info.decided ? `Already decided: ${info.verified ? 'approved' : 'rejected'}` : 'Awaiting decision'}
-        </div>
-      </div>`;
-    $view.appendChild(frag);
-    document.getElementById('ok-btn').onclick = async () => {
-      try {
-        await api(`/api/verify/mock/${encodeURIComponent(sid)}/decision`, { method: 'POST', auth: false, body: { accept: true } });
-        document.getElementById('status').textContent = 'Approved. Return to the clinician dashboard tab and click "Check verification".';
-        toast('Approved.', 'ok');
-      } catch (e) { toast(e.message, 'error'); }
-    };
-    document.getElementById('rej-btn').onclick = async () => {
-      const reason = prompt('Rejection reason?', 'document unreadable') || '';
-      try {
-        await api(`/api/verify/mock/${encodeURIComponent(sid)}/decision`, { method: 'POST', auth: false, body: { accept: false, reason } });
-        document.getElementById('status').textContent = `Rejected: ${reason}`;
-        toast('Rejected.', 'ok');
-      } catch (e) { toast(e.message, 'error'); }
     };
   }
 

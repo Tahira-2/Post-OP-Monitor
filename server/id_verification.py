@@ -79,15 +79,14 @@ class MockIdVerifier:
             failure_reason=s["failure_reason"],
         )
 
-    # Mock-only helpers used by the fake hosted-page endpoint:
+    # Mock-only helper. The real provider would resolve a verification
+    # session via its own webhook + storage; here we just record the
+    # decision so the next /poll reads it back.
     def mock_complete(self, provider_session_id: str, *, accept: bool, reason: str = "") -> None:
         if provider_session_id not in _SESSIONS:
             raise KeyError(provider_session_id)
         _SESSIONS[provider_session_id]["verified"] = accept
         _SESSIONS[provider_session_id]["failure_reason"] = reason
-
-    def mock_session_info(self, provider_session_id: str) -> dict | None:
-        return _SESSIONS.get(provider_session_id)
 
 
 _default_verifier: IdVerifier = MockIdVerifier()

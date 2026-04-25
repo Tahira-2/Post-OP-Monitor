@@ -50,8 +50,12 @@ def create_app() -> Flask:
 
     @app.get("/<path:path>")
     def static_files(path: str):
-        # SPA-style: any non-API path that doesn't exist in webapp/ falls back
-        # to index.html so the client-side router can handle it.
+        # SPA-style fallback: serve the requested file if it exists in
+        # webapp/, otherwise hand back index.html so the client-side router
+        # can handle the URL. API paths are explicitly excluded so that a
+        # typo in an /api/... call returns JSON 404, not HTML.
+        if path.startswith("api/"):
+            return jsonify({"error": "not found", "path": path}), 404
         target = Path(WEBAPP_DIR) / path
         if target.is_file():
             return send_from_directory(WEBAPP_DIR, path)
@@ -354,16 +358,77 @@ def create_app() -> Flask:
     @require_role("doctor")
     def doctor_list_patients():
         db = get_db()
+        did = g.user["id"]
+        # Patient list enriched with summary metadata for this doctor — number
+        # of unread sends, status of the most recent send, when it arrived.
+        # Lets the master list show a "needs attention" badge without the
+        # client having to fetch every patient's summaries upfront.
         rows = db.execute(
             """SELECT p.id, p.phone, p.full_name,
-                      cl.permission_granted, cl.permission_changed_at
+                      cl.permission_granted, cl.permission_changed_at,
+                      (SELECT COUNT(*) FROM summary_sends ss
+                         JOIN summaries s ON s.id = ss.summary_id
+                        WHERE ss.doctor_id = ?
+                          AND s.patient_id = p.id
+                          AND ss.read_at IS NULL) AS unread_count,
+                      (SELECT s.status_overall FROM summary_sends ss
+                         JOIN summaries s ON s.id = ss.summary_id
+                        WHERE ss.doctor_id = ? AND s.patient_id = p.id
+                        ORDER BY ss.sent_at DESC LIMIT 1) AS last_status,
+                      (SELECT MAX(ss.sent_at) FROM summary_sends ss
+                         JOIN summaries s ON s.id = ss.summary_id
+                        WHERE ss.doctor_id = ? AND s.patient_id = p.id) AS last_received_at
                FROM care_links cl
                JOIN patients p ON p.id = cl.patient_id
                WHERE cl.doctor_id = ?
-               ORDER BY p.full_name, p.phone""",
-            (g.user["id"],),
+               ORDER BY (CASE WHEN cl.permission_granted = 1 THEN 0 ELSE 1 END),
+                        p.full_name, p.phone""",
+            (did, did, did, did),
         ).fetchall()
         return jsonify({"patients": [dict(r) for r in rows]})
+
+    @app.get("/api/doctor/patients/<int:patient_id>/summaries")
+    @require_role("doctor")
+    def doctor_patient_summaries(patient_id: int):
+        """Summaries delivered to this doctor for one specific patient.
+        Replaces the old /api/doctor/inbox view."""
+        db = get_db()
+        link = db.execute(
+            "SELECT id FROM care_links WHERE doctor_id = ? AND patient_id = ?",
+            (g.user["id"], patient_id),
+        ).fetchone()
+        if link is None:
+            return jsonify({"error": "patient not in your list"}), 404
+        rows = db.execute(
+            """SELECT s.*, ss.id AS send_id, ss.trigger, ss.sent_at, ss.read_at,
+                      p.full_name AS patient_name, p.phone AS patient_phone
+               FROM summary_sends ss
+               JOIN summaries s ON s.id = ss.summary_id
+               JOIN patients   p ON p.id = s.patient_id
+               WHERE ss.doctor_id = ? AND s.patient_id = ?
+               ORDER BY ss.sent_at DESC""",
+            (g.user["id"], patient_id),
+        ).fetchall()
+        return jsonify({
+            "patient_id": patient_id,
+            "items": [dict(r) for r in rows],
+        })
+
+    @app.post("/api/doctor/patients/<int:patient_id>/mark-read")
+    @require_role("doctor")
+    def doctor_mark_patient_read(patient_id: int):
+        """Mark all of one patient's deliveries to this doctor as read.
+        Called when the doctor opens a patient's detail panel."""
+        db = get_db()
+        db.execute(
+            """UPDATE summary_sends
+               SET read_at = ?
+               WHERE doctor_id = ? AND read_at IS NULL
+                 AND summary_id IN (SELECT id FROM summaries WHERE patient_id = ?)""",
+            (int(time.time()), g.user["id"], patient_id),
+        )
+        db.commit()
+        return jsonify({"ok": True})
 
     @app.post("/api/doctor/patients/add")
     @require_role("doctor")
@@ -443,33 +508,6 @@ def create_app() -> Flask:
         db.commit()
         return jsonify({"removed": cur.rowcount > 0})
 
-    @app.get("/api/doctor/inbox")
-    @require_role("doctor")
-    def doctor_inbox():
-        db = get_db()
-        rows = db.execute(
-            """SELECT s.*, ss.trigger, ss.sent_at, ss.read_at,
-                      p.full_name AS patient_name, p.phone AS patient_phone
-               FROM summary_sends ss
-               JOIN summaries s ON s.id = ss.summary_id
-               JOIN patients   p ON p.id = s.patient_id
-               WHERE ss.doctor_id = ?
-               ORDER BY ss.sent_at DESC LIMIT 100""",
-            (g.user["id"],),
-        ).fetchall()
-        return jsonify({"items": [dict(r) for r in rows]})
-
-    @app.post("/api/doctor/inbox/<int:summary_send_id>/read")
-    @require_role("doctor")
-    def doctor_mark_read(summary_send_id: int):
-        db = get_db()
-        db.execute(
-            "UPDATE summary_sends SET read_at = ? WHERE id = ? AND doctor_id = ?",
-            (int(time.time()), summary_send_id, g.user["id"]),
-        )
-        db.commit()
-        return jsonify({"ok": True})
-
     # =================================================================
     # Admin / demo helpers (no auth — bind to localhost only in production)
     # =================================================================
@@ -485,13 +523,15 @@ def create_app() -> Flask:
         db = get_db()
 
         # Doctor
-        d_pwd_hash, d_pwd_salt = make_secret("demopass1!")
+        doctor_email    = "doctor.one@example.com"
+        doctor_password = "demopass1!"
+        d_pwd_hash, d_pwd_salt = make_secret(doctor_password)
         cur = db.execute(
             """INSERT INTO doctors
                (email, password_hash, password_salt, full_name, phone, verified, created_at)
                VALUES (?, ?, ?, ?, ?, 1, ?)""",
-            ("dr.singh@example.com", d_pwd_hash, d_pwd_salt,
-             "Dr. Anita Singh", "+1-555-0100", int(time.time())),
+            (doctor_email, d_pwd_hash, d_pwd_salt,
+             "Doctor One", "+1-555-0100", int(time.time())),
         )
         doctor_id = cur.lastrowid
 
@@ -499,14 +539,16 @@ def create_app() -> Flask:
         sample_prescription = (
             Path(__file__).resolve().parent.parent / "data" / "sample_prescription.txt"
         ).read_text(encoding="utf-8")
-        p_dev_hash, p_dev_salt = make_secret("GPO-2026-0001")
+        patient_phone  = "+1-555-0200"
+        patient_device = "GPO-2026-0001"
+        p_dev_hash, p_dev_salt = make_secret(patient_device)
         cur = db.execute(
             """INSERT INTO patients
                (phone, device_number, device_secret, device_salt, full_name,
                 prescription, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            ("+1-555-0200", "GPO-2026-0001", p_dev_hash, p_dev_salt,
-             "Jordan Rivera", sample_prescription, int(time.time())),
+            (patient_phone, patient_device, p_dev_hash, p_dev_salt,
+             "Patient One", sample_prescription, int(time.time())),
         )
         patient_id = cur.lastrowid
 
@@ -520,8 +562,8 @@ def create_app() -> Flask:
         db.commit()
         return jsonify({
             "ok": True,
-            "doctor": {"email": "dr.singh@example.com", "password": "demopass1!"},
-            "patient": {"phone": "+1-555-0200", "device_number": "GPO-2026-0001"},
+            "doctor":  {"email": doctor_email, "password": doctor_password},
+            "patient": {"phone": patient_phone, "device_number": patient_device},
         })
 
     @app.post("/api/admin/tick")

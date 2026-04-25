@@ -54,7 +54,7 @@ credentials:
 | Role | Credentials |
 |---|---|
 | Patient | phone `+1-555-0200`, device `GPO-2026-0001` |
-| Doctor  | email `dr.singh@example.com`, password `demopass1!` |
+| Doctor  | email `doctor.one@example.com`, password `demopass1!` |
 
 Open the doctor in your main window and the patient in an incognito window
 (localStorage is per-profile) to drive both sides at once.
@@ -106,16 +106,21 @@ This runs the full 24h sensor stream through the 30-min cycle and produces:
   this — patient just sees the state).
 
 **Doctor app** (`#/doctor`):
-- Patient list with one toggle per patient to enable/disable summary delivery.
-  Toggle is the **only** consent gate; flipping it off immediately stops auto +
-  manual delivery to that doctor.
-- Add patients by phone number (the patient must have signed up first; their
-  device number is the auth secret, never typed by the doctor).
-- Inbox of received summaries, polled every 4 seconds. Each item shows the
-  status pill, trigger (`auto`/`manual`), 12h sim window, per-vital averages,
-  and the human-readable narrative.
-- "Run scheduler tick" button — manually fires the auto-summary scheduler for
-  the demo without waiting the full 12 simulated hours.
+- Patient list (master view), one row per care-linked patient, showing the
+  most recent summary's status pill and an unread badge if any deliveries
+  haven't been opened yet.
+- Per-patient toggle controls whether GuardianPost-Op delivers that patient's
+  12-hour summaries to this doctor (auto and manual). Toggle is the **only**
+  consent gate; flipping it off immediately stops both delivery paths.
+- Click a patient name → detail panel opens below, listing every summary
+  delivered to this doctor for that patient (full narrative, status,
+  trigger, per-vital averages). Opening the detail clears that patient's
+  unread badge.
+- "Force summary now" button on each patient + a "Run scheduler tick"
+  demo control — both let you skip ahead so the demo doesn't wait the full
+  12 simulated hours.
+- Add patients by phone number (the patient must have signed up first;
+  their device number is the auth secret, never typed by the doctor).
 
 **ID verification** is implemented behind the `IdVerifier` interface in
 [server/id_verification.py](server/id_verification.py). The shipped

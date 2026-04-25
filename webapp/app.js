@@ -17,7 +17,8 @@
     me:    null,         // current patient or doctor row
     config: null,        // { demo_time_scale, ... }
     livePollHandle: null,
-    inboxPollHandle: null,
+    doctorPollHandle: null,
+    selectedPatientId: null,  // doctor view: which patient's detail is open
   };
 
   // ------------------------------------------------------------- helpers
@@ -57,8 +58,8 @@
   }
 
   function clearTimers() {
-    if (state.livePollHandle)  { clearInterval(state.livePollHandle);  state.livePollHandle = null; }
-    if (state.inboxPollHandle) { clearInterval(state.inboxPollHandle); state.inboxPollHandle = null; }
+    if (state.livePollHandle)   { clearInterval(state.livePollHandle);   state.livePollHandle = null; }
+    if (state.doctorPollHandle) { clearInterval(state.doctorPollHandle); state.doctorPollHandle = null; }
   }
 
   function html(strings, ...values) {
@@ -590,13 +591,21 @@
         <p class="card-sub">
           After creating your account you'll complete a third-party ID
           verification step before you can add patients or receive summaries.
+          <br /><span class="muted" style="font-size:12.5px;">Required: email and password (8+ characters).</span>
         </p>
         <form id="f">
-          <label>Full name<input name="full_name" type="text" required /></label>
-          <label>Email<input name="email" type="email" required /></label>
-          <label>Phone (optional)<input name="phone" type="tel" /></label>
-          <label>Password<span class="helper">8+ characters</span>
-            <input name="password" type="password" required minlength="8" /></label>
+          <label>Full name <span class="helper">(optional)</span>
+            <input name="full_name" type="text" placeholder="e.g. Doctor Smith" />
+          </label>
+          <label>Email <span class="helper">required</span>
+            <input name="email" type="email" required placeholder="you@hospital.org" />
+          </label>
+          <label>Phone <span class="helper">(optional)</span>
+            <input name="phone" type="tel" />
+          </label>
+          <label>Password <span class="helper">required, 8+ characters</span>
+            <input name="password" type="password" required minlength="8" />
+          </label>
           <div class="btn-row">
             <button type="submit">Create account</button>
             <a class="btn ghost" href="#/doctor/login">I already have one</a>
@@ -604,15 +613,25 @@
         </form>
       </div>`;
     $view.appendChild(frag);
-    document.getElementById('f').onsubmit = async (e) => {
+    const form = document.getElementById('f');
+    const submitBtn = form.querySelector('button[type="submit"]');
+    form.onsubmit = async (e) => {
       e.preventDefault();
-      const data = Object.fromEntries(new FormData(e.target));
+      submitBtn.disabled = true;
+      const original = submitBtn.textContent;
+      submitBtn.textContent = 'Creating account…';
+      const data = Object.fromEntries(new FormData(form));
       try {
         const r = await api('/api/auth/doctor/signup', { method: 'POST', auth: false, body: data });
         setSession(r.token, 'doctor');
         toast('Account created. Please verify your ID.', 'ok');
         navigate('/doctor/verify');
-      } catch (err) { toast(err.message, 'error'); }
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = original;
+      }
     };
   }
 
@@ -697,43 +716,38 @@
 
     const frag = html`
       ${banner}
-      <div class="row">
-        <div class="card" style="flex:2;min-width:320px;">
-          <h2 class="card-title">My patients</h2>
-          <p class="card-sub">
-            Toggle "summaries" to control whether GuardianPost-Op delivers each
-            patient's 12-hour summaries (auto and manual) to your inbox.
-          </p>
-          <div id="patients-host"></div>
-          <hr class="sep" />
-          <form id="add-form" style="flex-direction:row;align-items:end;flex-wrap:wrap;">
-            <label style="flex:1;min-width:220px;">Add a patient by phone
-              <span class="helper">the patient must have paired their device first</span>
-              <input name="phone" type="tel" required ${state.me.verified ? '' : 'disabled'} />
-            </label>
-            <button type="submit" ${state.me.verified ? '' : 'disabled'}>Add patient</button>
-          </form>
-        </div>
-
-        <div class="card" style="flex:1;min-width:280px;">
-          <h2 class="card-title">Demo controls</h2>
-          <p class="card-sub">
-            Skip ahead in simulated time without waiting the full
-            ${config.auto_summary_period_hours.toFixed(0)}h auto-summary cadence.
-          </p>
-          <div class="btn-row">
-            <button id="tick-btn" class="secondary">Run scheduler tick</button>
-          </div>
-          <div class="muted" style="font-size:12.5px;margin-top:8px;">
-            time scale x${config.demo_time_scale.toFixed(0)}
-          </div>
-        </div>
+      <div class="card">
+        <h2 class="card-title">My patients</h2>
+        <p class="card-sub">
+          Click a patient's name to open their summaries. Toggle "summaries" to
+          control whether GuardianPost-Op delivers their 12-hour summaries
+          (auto and manual) to you.
+        </p>
+        <div id="patients-host"></div>
+        <hr class="sep" />
+        <form id="add-form" style="flex-direction:row;align-items:end;flex-wrap:wrap;">
+          <label style="flex:1;min-width:220px;">Add a patient by phone
+            <span class="helper">the patient must have paired their device first</span>
+            <input name="phone" type="tel" required ${state.me.verified ? '' : 'disabled'} />
+          </label>
+          <button type="submit" ${state.me.verified ? '' : 'disabled'}>Add patient</button>
+        </form>
       </div>
 
+      <div id="patient-detail-host"></div>
+
       <div class="card">
-        <h2 class="card-title">Inbox</h2>
-        <p class="card-sub">Summaries delivered to you (auto every 12h, or manual from the patient).</p>
-        <div id="inbox-host"></div>
+        <h2 class="card-title">Demo controls</h2>
+        <p class="card-sub">
+          Skip ahead in simulated time without waiting the full
+          ${config.auto_summary_period_hours.toFixed(0)}h auto-summary cadence.
+        </p>
+        <div class="btn-row">
+          <button id="tick-btn" class="secondary">Run scheduler tick</button>
+        </div>
+        <div class="muted" style="font-size:12.5px;margin-top:8px;">
+          time scale x${config.demo_time_scale.toFixed(0)}
+        </div>
       </div>
     `;
     $view.appendChild(frag);
@@ -743,9 +757,9 @@
       const phone = e.target.phone.value.trim();
       try {
         const r = await api('/api/doctor/patients/add', { method: 'POST', body: { phone } });
-        toast(`Added ${r.full_name || r.patient_id}. Decide on summary permission below.`, 'ok');
+        toast(`Added ${r.full_name || r.patient_id}. Decide on summary permission.`, 'ok');
         e.target.reset();
-        await refreshPatients();
+        await refreshDoctorView();
       } catch (err) { toast(err.message, 'error'); }
     };
 
@@ -757,18 +771,27 @@
         } else {
           toast('Tick ran — no patients due for auto-summary yet.', 'info');
         }
-        await refreshInbox();
+        await refreshDoctorView();
       } catch (e) { toast(e.message, 'error'); }
     };
 
+    await refreshDoctorView();
+    state.doctorPollHandle = setInterval(refreshDoctorView, 4000);
+  }
+
+  async function refreshDoctorView() {
+    // Single tick refreshes both the patients list and (if open) the
+    // selected patient's detail panel.
     await refreshPatients();
-    await refreshInbox();
-    state.inboxPollHandle = setInterval(refreshInbox, 4000);
+    if (state.selectedPatientId != null) {
+      await refreshSelectedPatient(state.selectedPatientId, { silent: true });
+    }
   }
 
   async function refreshPatients() {
     const r = await api('/api/doctor/patients');
     const host = document.getElementById('patients-host');
+    if (!host) return;
     host.innerHTML = '';
     if (!r.patients.length) {
       host.innerHTML = '<div class="empty">No patients yet. Add one below.</div>';
@@ -776,97 +799,167 @@
     }
     const tbl = document.createElement('table');
     tbl.innerHTML = `<thead><tr>
-      <th>Patient</th><th>Phone</th><th>Summaries permission</th>
-      <th>Decided</th><th>Force summary</th><th></th>
+      <th>Patient</th><th>Phone</th><th>Last summary</th>
+      <th>Summaries permission</th><th></th>
     </tr></thead>`;
     const tb = document.createElement('tbody');
     for (const p of r.patients) {
       const tr = document.createElement('tr');
+      tr.dataset.pid = p.id;
+      if (state.selectedPatientId === p.id) tr.classList.add('row-selected');
+
       const granted = !!p.permission_granted;
-      tr.innerHTML = `<td>${escapeHtml(p.full_name || '—')}</td>
-                      <td class="muted">${escapeHtml(p.phone)}</td>
-                      <td><label style="flex-direction:row;align-items:center;gap:6px;">
-                        <input type="checkbox" data-pid="${p.id}" ${granted ? 'checked' : ''} />
-                        <span class="pill ${granted ? 'ok' : 'muted'}">${granted ? 'receiving' : 'off'}</span>
-                      </label></td>
-                      <td class="muted">${escapeHtml(fmtTimestamp(p.permission_changed_at))}</td>
-                      <td><button class="secondary" data-force="${p.id}">Force now</button></td>
-                      <td><button class="ghost" data-remove="${p.id}">Remove</button></td>`;
+      const lastStatusPill = p.last_status
+        ? `<span class="pill ${statusPillClass(p.last_status)}">${escapeHtml(p.last_status)}</span>`
+        : '<span class="muted">—</span>';
+      const unreadBadge = p.unread_count > 0
+        ? `<span class="pill brand" style="margin-left:6px;">${p.unread_count} new</span>`
+        : '';
+      const lastTime = p.last_received_at
+        ? `<div class="muted" style="font-size:11.5px;">${escapeHtml(fmtTimestamp(p.last_received_at))}</div>`
+        : '';
+
+      tr.innerHTML = `
+        <td>
+          <a href="#" class="patient-link" data-pid="${p.id}" style="color:var(--brand);font-weight:600;text-decoration:none;">
+            ${escapeHtml(p.full_name || '—')}
+          </a>${unreadBadge}
+        </td>
+        <td class="muted">${escapeHtml(p.phone)}</td>
+        <td>${lastStatusPill}${lastTime}</td>
+        <td><label style="flex-direction:row;align-items:center;gap:6px;">
+          <input type="checkbox" data-pid="${p.id}" ${granted ? 'checked' : ''} />
+          <span class="pill ${granted ? 'ok' : 'muted'}">${granted ? 'receiving' : 'off'}</span>
+        </label></td>
+        <td>
+          <button class="ghost" data-remove="${p.id}" title="Remove patient">Remove</button>
+        </td>`;
       tb.appendChild(tr);
     }
     tbl.appendChild(tb);
     host.appendChild(tbl);
 
+    host.querySelectorAll('a.patient-link').forEach(a => {
+      a.onclick = (e) => {
+        e.preventDefault();
+        const pid = parseInt(a.getAttribute('data-pid'), 10);
+        selectPatient(pid);
+      };
+    });
     host.querySelectorAll('input[type="checkbox"][data-pid]').forEach(box => {
       box.onchange = async () => {
         const pid = box.getAttribute('data-pid');
         try {
           await api(`/api/doctor/patients/${pid}/permission`, { method: 'POST', body: { granted: box.checked } });
-          await refreshPatients();
+          await refreshDoctorView();
           toast('Permission updated.', 'ok');
         } catch (e) { toast(e.message, 'error'); box.checked = !box.checked; }
       };
     });
-    host.querySelectorAll('button[data-force]').forEach(btn => {
-      btn.onclick = async () => {
-        const pid = btn.getAttribute('data-force');
-        try {
-          await api(`/api/admin/force-summary/${pid}`, { method: 'POST', auth: false });
-          toast('Summary generated.', 'ok');
-          await refreshInbox();
-        } catch (e) { toast(e.message, 'error'); }
-      };
-    });
     host.querySelectorAll('button[data-remove]').forEach(btn => {
       btn.onclick = async () => {
-        const pid = btn.getAttribute('data-remove');
+        const pid = parseInt(btn.getAttribute('data-remove'), 10);
         if (!confirm('Remove this patient from your list? This also disables further summaries.')) return;
         try {
           await api(`/api/doctor/patients/${pid}`, { method: 'DELETE' });
-          await refreshPatients();
+          if (state.selectedPatientId === pid) {
+            state.selectedPatientId = null;
+            document.getElementById('patient-detail-host').innerHTML = '';
+          }
+          await refreshDoctorView();
           toast('Removed.', 'ok');
         } catch (e) { toast(e.message, 'error'); }
       };
     });
   }
 
-  async function refreshInbox() {
-    const host = document.getElementById('inbox-host');
+  async function selectPatient(pid) {
+    state.selectedPatientId = pid;
+    // Re-render so the row gets the .row-selected highlight.
+    await refreshPatients();
+    await refreshSelectedPatient(pid, { silent: false });
+    // Mark all of this patient's deliveries as read; the patients list will
+    // pick up the cleared badge on the next tick.
+    try {
+      await api(`/api/doctor/patients/${pid}/mark-read`, { method: 'POST' });
+      await refreshPatients();
+    } catch (_) { /* non-fatal */ }
+  }
+
+  async function refreshSelectedPatient(pid, { silent }) {
+    const host = document.getElementById('patient-detail-host');
     if (!host) return;
     let r;
-    try { r = await api('/api/doctor/inbox'); }
-    catch (_) { return; }
-    host.innerHTML = '';
-    if (!r.items.length) {
-      host.innerHTML = '<div class="empty">No summaries yet. Auto delivery fires every 12 sim-hours.</div>';
+    try {
+      r = await api(`/api/doctor/patients/${pid}/summaries`);
+    } catch (e) {
+      if (!silent) toast(e.message, 'error');
       return;
     }
-    for (const item of r.items) {
-      const card = document.createElement('div');
-      card.className = 'card';
-      card.style.marginBottom = '10px';
-      card.style.padding = '14px 16px';
-      card.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
-          <div>
-            <div style="font-weight:600;">${escapeHtml(item.patient_name || item.patient_phone)}
-              <span class="pill ${statusPillClass(item.status_overall)}" style="margin-left:8px;">${escapeHtml(item.status_overall)}</span>
-              <span class="pill ${item.trigger === 'manual' ? 'brand' : 'muted'}" style="margin-left:4px;">${escapeHtml(item.trigger)}</span>
+    // Find this patient's name from the table for the detail header.
+    const link = document.querySelector(`a.patient-link[data-pid="${pid}"]`);
+    const name = link ? link.textContent.trim() : `Patient ${pid}`;
+
+    const items = r.items || [];
+    let body;
+    if (!items.length) {
+      body = `<div class="empty">No summaries delivered yet for this patient.
+        Click <strong>Force now</strong> to generate one immediately, or wait
+        for the next 12-hour auto cycle.</div>`;
+    } else {
+      body = items.map(item => `
+        <div class="card" style="margin-bottom:10px;padding:14px 16px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+            <div>
+              <div style="font-weight:600;">
+                <span class="pill ${statusPillClass(item.status_overall)}">${escapeHtml(item.status_overall)}</span>
+                <span class="pill ${item.trigger === 'manual' ? 'brand' : 'muted'}" style="margin-left:4px;">${escapeHtml(item.trigger)}</span>
+              </div>
+              <div class="muted" style="font-size:12.5px;margin-top:4px;">
+                sim hours ${fmt(item.sim_hour_start,1)}–${fmt(item.sim_hour_end,1)}
+                &nbsp;·&nbsp; received ${escapeHtml(fmtTimestamp(item.sent_at))}
+                ${item.read_at ? '' : '&nbsp;·&nbsp;<span class="pill brand">unread</span>'}
+              </div>
             </div>
-            <div class="muted" style="font-size:12.5px;margin-top:2px;">
-              sim hours ${fmt(item.sim_hour_start,1)}–${fmt(item.sim_hour_end,1)}
-              &nbsp;·&nbsp; received ${escapeHtml(fmtTimestamp(item.sent_at))}
+            <div class="muted" style="font-size:12.5px;text-align:right;">
+              crit ${item.alert_count_critical} · warn ${item.alert_count_warn}<br />
+              HR ${fmt(item.hr_avg,1)} · HRV ${fmt(item.hrv_avg,1)} · RR ${fmt(item.rr_avg,1)} · SpO2 ${fmt(item.spo2_avg,1)} · ${fmt(item.temp_avg,2)}°C
             </div>
           </div>
-          <div class="muted" style="font-size:12.5px;text-align:right;">
-            crit ${item.alert_count_critical} · warn ${item.alert_count_warn}<br />
-            HR ${fmt(item.hr_avg,1)} · HRV ${fmt(item.hrv_avg,1)} · RR ${fmt(item.rr_avg,1)} · SpO2 ${fmt(item.spo2_avg,1)} · ${fmt(item.temp_avg,2)}°C
+          <pre class="narrative" style="margin-top:10px;">${escapeHtml(item.narrative)}</pre>
+        </div>
+      `).join('');
+    }
+
+    host.innerHTML = `
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+          <div>
+            <h2 class="card-title" style="margin-bottom:2px;">${escapeHtml(name)}</h2>
+            <div class="muted" style="font-size:12.5px;">${items.length} summary item(s) delivered to you</div>
+          </div>
+          <div class="btn-row">
+            <button id="force-detail-btn" class="secondary">Force summary now</button>
+            <button id="close-detail-btn" class="ghost">Close</button>
           </div>
         </div>
-        <pre class="narrative" style="margin-top:10px;">${escapeHtml(item.narrative)}</pre>
-      `;
-      host.appendChild(card);
-    }
+        <hr class="sep" />
+        <div id="detail-summaries-host">${body}</div>
+      </div>
+    `;
+    document.getElementById('force-detail-btn').onclick = async () => {
+      try {
+        await api(`/api/admin/force-summary/${pid}`, { method: 'POST', auth: false });
+        toast('Summary generated.', 'ok');
+        await refreshSelectedPatient(pid, { silent: true });
+        await refreshPatients();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+    document.getElementById('close-detail-btn').onclick = () => {
+      state.selectedPatientId = null;
+      host.innerHTML = '';
+      refreshPatients();
+    };
   }
 
   // ------------------------------------------------------------- VIEW: mock hosted ID page

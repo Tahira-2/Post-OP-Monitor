@@ -272,3 +272,9 @@ pre.narrative {
   text-decoration: line-through;
 }
 .chip-used:hover { background: #eef1f7; }
+
+/* ---- Selected-row highlight (doctor patient list) ---- */
+tr.row-selected td {
+  background: var(--brand-soft);
+}
+a.patient-link:hover { text-decoration: underline; }

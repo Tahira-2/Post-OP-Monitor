@@ -206,18 +206,27 @@
       <div class="card">
         <h2 class="card-title">Demo shortcut</h2>
         <p class="card-sub">
-          Reset the database and seed one verified clinician + one paired
-          patient (with summary permission already granted), then jump
-          straight into either side without typing credentials.
+          <strong>One-time setup</strong> — wipes any existing accounts and
+          recreates the database with one verified clinician and one paired
+          patient (summary permission already granted), so you can jump in
+          without typing credentials.
+        </p>
+        <p class="card-sub" style="color:var(--warn);">
+          You don't need to click this every time you restart the server —
+          your accounts persist in <span class="kbd">data/guardian.db</span>
+          across restarts. Use this only when you want a clean slate.
         </p>
         <div class="btn-row">
-          <button id="seed-btn" class="secondary">Reset & seed demo data</button>
+          <button id="seed-btn" class="secondary">Wipe DB & re-seed demo data</button>
         </div>
         <div id="seed-result" style="margin-top:14px;"></div>
       </div>
     `;
     $view.appendChild(frag);
     document.getElementById('seed-btn').onclick = async () => {
+      if (!confirm('This will DELETE every existing account (patients, doctors, summaries) and recreate just the demo doctor + demo patient. Continue?')) {
+        return;
+      }
       const out = document.getElementById('seed-result');
       out.innerHTML = '<span class="muted">Seeding…</span>';
       try {
